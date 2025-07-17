@@ -169,6 +169,7 @@ export default function ResultsTable({
   const orgSettings = ssrPolyfills?.useOrgSettings?.() || _orgSettings;
 
   const [showMetricFilter, setShowMetricFilter] = useState<boolean>(false);
+  const [pValueSortDirection, setPValueSortDirection] = useState<"asc" | "desc" | null>(null);
 
   const tableContainerRef = useRef<HTMLDivElement | null>(null);
   const [graphCellWidth, setGraphCellWidth] = useState(800);
@@ -343,6 +344,56 @@ export default function ResultsTable({
     getExperimentMetricById,
   ]);
 
+  // Sort rows by P-value if sorting is enabled
+  const sortedRows = useMemo(() => {
+    if (!pValueSortDirection || statsEngine === "bayesian") {
+      return rows;
+    }
+
+    return [...rows].sort((a, b) => {
+      // Get the first non-baseline variation for each row
+      const aVariation = orderedVariations.find(v => v.index !== baselineRow && !variationFilter?.includes(v.index));
+      const bVariation = orderedVariations.find(v => v.index !== baselineRow && !variationFilter?.includes(v.index));
+      
+      if (!aVariation || !bVariation) return 0;
+
+      const aStats = a.variations[aVariation.index];
+      const bStats = b.variations[bVariation.index];
+
+      if (!aStats || !bStats) return 0;
+
+      // Use adjusted P-value if available, otherwise use regular P-value
+      const aPValue = aStats.pValueAdjusted !== undefined && pValueCorrection 
+        ? aStats.pValueAdjusted 
+        : aStats.pValue;
+      const bPValue = bStats.pValueAdjusted !== undefined && pValueCorrection 
+        ? bStats.pValueAdjusted 
+        : bStats.pValue;
+
+      // Handle undefined P-values
+      if (aPValue === undefined && bPValue === undefined) return 0;
+      if (aPValue === undefined) return 1;
+      if (bPValue === undefined) return -1;
+
+      const multiplier = pValueSortDirection === "asc" ? 1 : -1;
+      return (aPValue - bPValue) * multiplier;
+    });
+  }, [rows, pValueSortDirection, statsEngine, orderedVariations, baselineRow, variationFilter, pValueCorrection]);
+
+  // Create a mapping from original row indices to sorted row indices
+  const rowIndexMapping = useMemo(() => {
+    if (!pValueSortDirection || statsEngine === "bayesian") {
+      return rows.map((_, i) => i);
+    }
+    
+    const originalIndices = rows.map((_, i) => i);
+    const sortedIndices = sortedRows.map(sortedRow => 
+      rows.findIndex(originalRow => originalRow.metric.id === sortedRow.metric.id)
+    );
+    
+    return sortedIndices;
+  }, [rows, sortedRows, pValueSortDirection, statsEngine]);
+
   const {
     containerRef,
     tooltipOpen,
@@ -374,6 +425,14 @@ export default function ResultsTable({
   const appliedPValueCorrection = hasGoalMetrics
     ? pValueCorrection ?? null
     : null;
+
+  const handlePValueSort = () => {
+    setPValueSortDirection(prev => {
+      if (prev === null) return "asc";
+      if (prev === "asc") return "desc";
+      return null;
+    });
+  };
 
   return (
     <div className="position-relative" ref={containerRef}>
@@ -557,11 +616,29 @@ export default function ResultsTable({
                             </div>
                           }
                         >
-                          {appliedPValueCorrection ? "Adj. " : ""}P-value{" "}
-                          <RxInfoCircled />
+                          <span 
+                            className={clsx("cursor-pointer d-flex align-items-center", styles.sortableHeader, {
+                              "sorted": pValueSortDirection !== null,
+                              "up": pValueSortDirection === "asc"
+                            })}
+                            onClick={handlePValueSort}
+                            style={{ userSelect: "none" }}
+                          >
+                            {appliedPValueCorrection ? "Adj. " : ""}P-value{" "}
+                            <RxInfoCircled />
+                          </span>
                         </Tooltip>
                       ) : (
-                        <>P-value</>
+                        <span 
+                          className={clsx("cursor-pointer d-flex align-items-center", styles.sortableHeader, {
+                            "sorted": pValueSortDirection !== null,
+                            "up": pValueSortDirection === "asc"
+                          })}
+                          onClick={handlePValueSort}
+                          style={{ userSelect: "none" }}
+                        >
+                          P-value
+                        </span>
                       )}
                     </th>
                     <th
@@ -630,7 +707,7 @@ export default function ResultsTable({
               </tr>
             </thead>
 
-            {rows.map((row, i) => {
+            {sortedRows.map((row, i) => {
               const baseline = row.variations[baselineRow] || {
                 value: 0,
                 cr: 0,
@@ -670,7 +747,8 @@ export default function ResultsTable({
                       cr: 0,
                       users: 0,
                     };
-                    const rowResults = rowsResults?.[i]?.[j];
+                    const originalRowIndex = rowIndexMapping[i];
+                    const rowResults = rowsResults?.[originalRowIndex]?.[j];
                     if (!rowResults) {
                       return null;
                     }
@@ -715,7 +793,7 @@ export default function ResultsTable({
                       !rowResults.hasScaledImpact &&
                       differenceType === "scaled";
                     const isHovered =
-                      hoveredMetricRow === i && hoveredVariationRow === j;
+                      hoveredMetricRow === originalRowIndex && hoveredVariationRow === j;
 
                     const resultsHighlightClassname = clsx(
                       rowResults.resultsStatus,
@@ -737,7 +815,7 @@ export default function ResultsTable({
                         return;
                       }
                       if (!rowResults.hasData) return;
-                      hoverRow(i, j, e, settings);
+                      hoverRow(originalRowIndex, j, e, settings);
                     };
                     const onPointerLeave = () => {
                       if (!rowResults.hasData) return;
