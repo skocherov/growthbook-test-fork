@@ -8,7 +8,12 @@ services:
     volumes:
       - mongodata:/data/db
   growthbook:
-    image: "growthbook/growthbook:latest"
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        - NODE_MAJOR=20
+        - PYTHON_MAJOR=3.11
     ports:
       - "3000:3000"
       - "3100:3100"
@@ -16,8 +21,15 @@ services:
       - mongo
     environment:
       - MONGODB_URI=mongodb://root:password@mongo:27017/growthbook?authSource=admin
+      - NODE_OPTIONS=--max-old-space-size=2048
     volumes:
       - uploads:/usr/local/src/app/packages/back-end/uploads
+    deploy:
+      resources:
+        limits:
+          memory: 4G
+        reservations:
+          memory: 2G
 volumes:
   uploads:
   mongodata:
